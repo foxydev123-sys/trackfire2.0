@@ -1,0 +1,98 @@
+/* =====================================================================
+   ABILITIES — every tank has ONE special power, fired with its own
+   button (key Q / the ⚡ button). Each one has a cooldown and five
+   upgrade levels bought with coins + parts, like the five stats.
+
+     zagros   wall    Cover Wall   — drops a wall you can hide behind
+     baz      drone   Suicide Car  — a little car that chases an enemy and blows up
+     halgurd  dome    Bunker Dome  — a big bubble: nothing can be shot through its skin
+     rashaba  cloak   Vanish       — invisible to enemies; firing breaks it
+     safeen   homing  Guided Shell — the camera rides the shell until it hits
+     bradost  freeze  Freeze Cage  — your next shell cages an enemy: no moving, no firing
+     korek    heal    Repair Shot  — your next shell heals the team-mate it hits
+     newroz   hole    Black Hole   — drags every enemy near it into the middle
+
+   The numbers below are [level 0 … level 5]; lvl(a, 'dmg', l) reads one.
+   Both the server and the client read this file, so a power can never
+   mean two different things.
+   ===================================================================== */
+
+export const ABILITIES = {
+  wall:   { tank: 'zagros',  icon: '🧱', cd: [20, 18.5, 17, 15.6, 14.2, 13],  hp:  [150, 185, 220, 255, 290, 330], life: [20, 21, 22, 23, 24, 26], len: [7, 7.4, 7.8, 8.2, 8.6, 9] },
+  drone:  { tank: 'baz',     icon: '🚗', cd: [24, 22.4, 20.8, 19.2, 17.6, 16], hp:  [30, 38, 46, 54, 62, 70],       dmg:  [45, 51, 57, 63, 69, 75], life: [10, 10.6, 11.2, 11.8, 12.4, 13], spd: [13, 13.4, 13.8, 14.2, 14.6, 15] },
+  dome:   { tank: 'halgurd', icon: '🛡', cd: [34, 32, 30, 28, 26, 24],         r:   [9, 9.8, 10.6, 11.4, 12.2, 13],  life: [10, 10, 10, 10, 10, 10] },
+  cloak:  { tank: 'rashaba', icon: '👁', cd: [22, 20.6, 19.2, 17.8, 16.4, 15], life: [3, 3.2, 3.4, 3.6, 3.8, 4] },
+  homing: { tank: 'safeen',  icon: '🚀', cd: [26, 24.4, 22.8, 21.2, 19.6, 18], dmg: [70, 78, 86, 94, 102, 110],      turn: [2.2, 2.44, 2.68, 2.92, 3.16, 3.4], life: [6, 6.2, 6.4, 6.6, 6.8, 7], spd: [23, 23.6, 24.2, 24.8, 25.4, 26] },
+  freeze: { tank: 'bradost', icon: '❄', cd: [20, 18.8, 17.6, 16.4, 15.2, 14],  life: [2.5, 2.7, 2.9, 3.1, 3.3, 3.5] },
+  heal:   { tank: 'korek',   icon: '➕', cd: [16, 14.8, 13.6, 12.4, 11.2, 10],  heal: [35, 42, 49, 56, 63, 70] },
+  hole:   { tank: 'newroz',  icon: '🕳', cd: [30, 28.2, 26.4, 24.6, 22.8, 21], r:   [12, 13, 14, 15, 16, 17],        life: [3.5, 3.8, 4.1, 4.4, 4.7, 5], pull: [9, 10, 11, 12, 13, 14] },
+};
+export const AB_IDS = Object.keys(ABILITIES);
+export const MAX_AB = 5;
+/** Which ability a tank type carries. */
+export const AB_OF = {};
+for (const [k, a] of Object.entries(ABILITIES)) AB_OF[a.tank] = k;
+export const abilityOf = (tankId) => AB_OF[tankId] || null;
+/** One number of an ability at an upgrade level (0…5). */
+export function lvl(ab, key, l = 0) {
+  const A = ABILITIES[ab]; if (!A || !A[key]) return 0;
+  return A[key][Math.max(0, Math.min(MAX_AB, l | 0))];
+}
+export const abLevel = (mods) => Math.max(0, Math.min(MAX_AB, (mods && mods.ab) | 0));
+
+// Upgrading an ability costs the same kind of money as a stat, a bit more.
+const AB_COINS = [220, 500, 1100, 2400, 5200], AB_PARTS = [14, 34, 80, 175, 360];
+const RK = { common: 1, rare: 1.5, epic: 2, legendary: 3 };
+export function abCost(rarity, k) {
+  if (k >= MAX_AB) return null;
+  const r = RK[rarity] || 1;
+  return { coins: Math.round(AB_COINS[k] * r), parts: Math.round(AB_PARTS[k] * r) };
+}
+
+/* ---------------- live effects that sit on the map ----------------
+   A match's map carries fx = {walls, domes, holes}. The server owns them
+   and tells clients when one appears or goes; both sides then run the very
+   same physics on them, so your tank is pulled into a black hole on your
+   screen at the same moment as on the server. */
+export function attachFx(map) {
+  const fx = map.fx && map.fx.own === map ? map.fx : (map.fx = { own: map, walls: [], domes: [], holes: [] });
+  fx.walls.length = 0; fx.domes.length = 0; fx.holes.length = 0;
+  if (!map.near0) {
+    map.near0 = map.near;
+    map.near = (x, z) => {
+      const b = map.near0(x, z), W = map.fx && map.fx.walls;
+      if (!W || !W.length) return b;
+      let out = null;
+      for (const w of W) if (!w.gone && Math.abs(w.x - x) < 12 && Math.abs(w.z - z) < 12) (out || (out = b.slice())).push(...w.cols);
+      return out || b;
+    };
+  }
+  return fx;
+}
+/** Build the colliders of one cover wall (a short row of posts across the aim direction). */
+export function wallCols(w) {
+  const n = 5, R = 0.95, step = (w.len - R * 2) / (n - 1), sx = Math.cos(w.a), sz = -Math.sin(w.a);
+  const cols = [];
+  for (let i = 0; i < n; i++) { const d = -w.len / 2 + R + step * i; cols.push({ x: w.x + sx * d, z: w.z + sz * d, r: R, wall: w }); }
+  return cols;
+}
+/** Extra pull on a tank from every black hole that is not on its own side. Run by server AND client. */
+export function fxForces(s, map, dt) {
+  const fx = map.fx; if (!fx || !fx.holes.length) return;
+  for (const h of fx.holes) {
+    if (h.tm && s.tm && h.tm === s.tm) continue;           // your own team is not pulled
+    const dx = h.x - s.x, dz = h.z - s.z, d = Math.sqrt(dx * dx + dz * dz);
+    if (d > h.r || d < 0.4) continue;
+    const k = (1 - d / h.r) * h.pull * dt;                 // stronger the closer you are
+    s.x += (dx / d) * k; s.z += (dz / d) * k;
+  }
+}
+/** True when a shot from (x0,z0) to (x1,z1) crosses the skin of a dome — the shell dies there. */
+export function domeBlock(map, x0, z0, x1, z1) {
+  const fx = map.fx; if (!fx || !fx.domes.length) return null;
+  for (const d of fx.domes) {
+    const a = Math.hypot(x0 - d.x, z0 - d.z) <= d.r, b = Math.hypot(x1 - d.x, z1 - d.z) <= d.r;
+    if (a !== b) return d;
+  }
+  return null;
+}
